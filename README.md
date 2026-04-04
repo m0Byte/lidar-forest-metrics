@@ -31,21 +31,10 @@ Using discrete-return lidar data, this project:
 * 24 `.las` lidar tiles (~3 returns/m²)
 * Plot data including location, AGB, and dominant height
 
-## Requirements
+## R Packages
 
-* R
-* Packages: `lidR`, `terra`, `sf`, `dplyr`, `ggplot2`
+* `lidR`, `terra`, `sf`, `dplyr`, `ggplot2`
 
-## Usage
-
-1. Organize data into folders (e.g., DEM, CHM, outputs)
-2. Run the R script to:
-
-   * Process lidar data
-   * Generate rasters
-   * Extract metrics
-   * Build models
-3. Export maps and plots
 
 ## Notes
 
