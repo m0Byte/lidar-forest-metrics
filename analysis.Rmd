@@ -1,0 +1,295 @@
+```{r}
+library(lidR)
+library(terra)
+library(tidyverse)
+```
+
+```{r}
+# reading the data
+cat_afrf <- readLAScatalog("LAS/")
+
+las_check(cat_afrf) #check to find common errors
+summary(cat_afrf)  #Providinf a statistical overview
+plot(cat_afrf) #plotting
+
+
+```
+
+```{r}
+
+tile_1_afrf <- readLAS("LAS/AFRF_Tile1.las")
+las_check(tile_1_afrf) #checking errors again
+
+
+#setting up path to export the filtered las
+opt_output_files(cat_afrf) <- paste("Filtered/filtered_afrf_{ID}",
+                                    sep = "")
+# removing duplicates
+cat_afrf <-filter_duplicates(cat_afrf)
+
+#checking if everything went well
+filtered_t1 <- readLAS("Filtered/filtered_afrf_1.las")
+las_check(filtered_t1)
+filtered_t1
+
+#reload the filtered tiles
+filtered_cat_afrf <- readLAScatalog("Filtered")
+summary(filtered_cat_afrf) #giving stats summary
+plot(filtered_cat_afrf) #plotting
+
+
+```
+
+## DEM creation
+
+```{r}
+
+#creating dem
+dem <- rasterize_terrain(filtered_cat_afrf, 2, tin())
+
+# saving
+writeRaster(dem, "AFRF_DEM.tif", overwrite = TRUE)
+
+# Plotting
+plot(dem)
+#plot_dtm3d(dem)
+
+```
+
+## noralization
+
+```{r}
+opt_output_files(filtered_cat_afrf) <- paste("Normalized LAS/norm_afrf_{ID}", sep = "")
+
+#normalize all tiles in cat_afrf with the DEM 
+norm_tiles_afrf <- normalize_height(filtered_cat_afrf, dem) 
+
+
+norm_afrf_cat <- readLAScatalog("Normalized LAS")
+summary(norm_afrf_cat)
+plot(norm_afrf_cat)
+
+#filtering
+opt_filter(norm_afrf_cat) <- "-drop_z_below 0 -drop_z_above 55"
+summary(norm_afrf_cat)
+plot(norm_afrf_cat)
+
+
+```
+
+## CHM
+
+```{r}
+
+# Create CHM using point-to-raster
+
+chm_afrf <- rasterize_canopy(norm_afrf_cat, 2, p2r())
+
+# saving chm
+writeRaster(chm_afrf, "AFRF_CHM.tif", overwrite = TRUE)
+
+# Plot CHM
+plot(chm_afrf)
+#plot_dtm3d(chm_afrf)
+
+```
+
+## plots extraction and metrics
+
+```{r}
+#reading table
+plot_table <- read.csv("Plots/Plot_Table.csv")
+
+#define plot radius
+radius <- 10
+
+#for loop to extract multiple plots
+for(i in 1:nrow(plot_table)){ #run the loop until i = the number of rows in 'plot_table' (20)
+  plot_cent <- c(plot_table$X[i], plot_table$Y[i]) #extract plot center
+  plot_las <- clip_circle(norm_afrf_cat, plot_cent[1], plot_cent[2], radius) #clip plot from norm_cat_las
+  output_file <- paste("Plots/AFRF_Plot_", i, ".las", sep = "") #output directory as string
+  writeLAS(assign(paste("AFRF_Plot_", i, sep = ""), plot_las), output_file) #write'afrf_Plot_i' to output dir.
+}
+
+
+
+
+```
+
+# metrics
+
+```{r}
+
+#calculating cloud metrics for all plots
+#create empty dataframe
+afrf_plot_metrics <- data.frame() 
+
+
+
+#For loop to calculate cloud metrics for all plots and add them to 'afrf_cloud_metrics'
+for(i in 1:nrow(plot_table)){ #for loop == number of rows in plot_table (20)
+  plot <- readLAS(paste("Plots/afrf_Plot_", i, ".las", sep= ""), filter = "-keep_first -drop_z_below 2")
+  metrics <- cloud_metrics(plot, .stdmetrics) #compute standard metrics
+  afrf_plot_metrics <- rbind(afrf_plot_metrics, metrics) #add the new 'metrics' to 'afrf_cloud_metrics'
+}
+
+#Export afrf_plot_metrics as .csv in Plots folder
+write_csv(afrf_plot_metrics, "Plots/afrf_plot_metrics.csv")
+
+#afrf_plot_metrics
+
+```
+
+# model development
+
+```{r}
+#reading table
+plot_table <- read_csv("Plots/Plot_Table.csv")
+
+afrf_plot_metrics$Plot_ID = 1:38
+
+#Join 'Plot_Table' and 'afrf_Plot_Metrics' into 'data_table'
+data_table <- plot_table %>%
+  full_join(afrf_plot_metrics)
+
+colnames(data_table)
+
+
+```
+
+```{r}
+# Initial variable exploration and selection
+
+#correlation among height quantiles
+pairs( ~ zq25 + zq50 + zq75 + zq90 + zq95, data = data_table)
+
+
+
+# exploring relationship between height and canopy density
+pairs(~ zq90 + pzabove2 + pzabovezmean+ zsd, data = data_table)
+
+
+
+```
+
+```{r}
+#Dominant Height
+
+# starting with null
+null_hdom <- lm(Dominant_Height ~ 1, data = data_table)
+
+#testing candidate predictors
+add1(null_hdom, ~ zq50 + zq75 + zq90 + zq95+ zsd,test = "F")
+
+
+# final Dominant Height model
+hdom_model <- lm( Dominant_Height ~ zq90, data = data_table)
+
+summary(hdom_model)
+
+
+
+#plotting
+plot(hdom_model$fitted,        
+  data_table$Dominant_Height,    
+  xlab = "Predicted Dominant Height",
+  ylab = "Measured Dominant Height",
+  
+)
+abline(0, 1)
+
+
+
+
+
+
+
+
+
+```
+
+
+# above ground biomass
+
+```{r}
+#Above ground biomass
+
+# strting with a null model
+null_agb <- lm( Total_AGB ~ 1,data = data_table)
+
+# testing predictors
+add1(null_agb, ~ zq90 + pzabove2 + pzabovezmean,test = "F")
+
+#final model
+agb_model <- lm(
+  Total_AGB ~ zq90 + pzabovezmean,
+  data = data_table
+)
+
+#summary
+summary(agb_model)
+
+
+#plotting
+plot(
+  agb_model$fitted,
+  data_table$Total_AGB,
+  xlab = "Predicted AGB",
+  ylab = "Measured AGB",
+)
+abline(0, 1)
+
+
+
+
+
+
+```
+
+#grid metrics
+
+
+```{r}
+# grid metrics
+grid_metrics <- pixel_metrics(norm_afrf_cat, .stdmetrics, res = 10)
+
+zq90_r  <- terra::subset(grid_metrics, "zq90")
+pzmean_r <- terra::subset(grid_metrics, "pzabovezmean")
+
+# stacking predictors
+agb_stack <- c(zq90_r, pzmean_r)
+
+#regression
+agb_map <- terra::app(agb_stack, function(x){
+  coef(agb_model)[1] +
+    coef(agb_model)[2] * x[1] +
+    coef(agb_model)[3] * x[2]
+})
+#plotting
+plot(agb_map)
+writeRaster(agb_map, "AFRF_AGB.tif", overwrite = TRUE) #exporting
+
+
+
+
+
+
+```
+
+
+#dominant height 
+```{r}
+# dominant height raster
+zq90_r <- terra::subset(grid_metrics, "zq90")
+
+f_dom <- function(x){
+  coef(hdom_model)[2] * x + coef(hdom_model)[1]
+}
+
+hdom_map <- terra::app(zq90_r, f_dom)
+
+#plotting
+plot(hdom_map)
+writeRaster(hdom_map, "AFRF_DomHeight.tif", overwrite = TRUE) #saving
+
+
